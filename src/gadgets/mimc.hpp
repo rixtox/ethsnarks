@@ -287,7 +287,77 @@ public:
 // generic aliases for 'MiMC', masks specific implementation
 using MiMC_hash_gadget = MiMC_hash_MiyaguchiPreneel_gadget;
 
+class MiMC_encrypt_gadget : public GadgetT
+{
+public:
+    typedef MiMCe7_gadget MiMCT;
 
+    VariableT m_in_key;
+    VariableArrayT m_in_plaintext;
+
+    VariableArrayT m_out_ciphertext;
+
+    std::vector<MiMCT> m_blocks;
+
+    void _setup_gadgets(
+        const VariableT &in_key,
+        const VariableArrayT &in_plaintext,
+        const std::vector<FieldT> &in_round_constants)
+    {
+        m_blocks.reserve(in_plaintext.size());
+        m_out_ciphertext.reserve(in_plaintext.size());
+
+        for (size_t i = 0; i < in_plaintext.size(); i++)
+        {
+            m_blocks.emplace_back(this->pb, in_plaintext[i], in_key, FMT(annotation_prefix, ".block [%d]", i));
+            m_out_ciphertext.emplace_back(m_blocks.back().result());
+        }
+    }
+
+    MiMC_encrypt_gadget(
+        ProtoboardT &pb,
+        const VariableT &in_key,
+        const VariableArrayT &in_plaintext,
+        const std::vector<FieldT> &in_round_constants,
+        const std::string &annotation_prefix)
+        : GadgetT(pb, annotation_prefix),
+          m_in_key(in_key)
+    {
+        _setup_gadgets(in_key, in_plaintext, in_round_constants);
+    }
+
+    MiMC_encrypt_gadget(
+        ProtoboardT &pb,
+        const VariableT &in_key,
+        const VariableArrayT &in_plaintext,
+        const std::string &annotation_prefix)
+        : GadgetT(pb, annotation_prefix),
+          m_in_key(in_key)
+    {
+        _setup_gadgets(in_key, in_plaintext, MiMCT::static_constants());
+    }
+
+    const VariableArrayT &result() const
+    {
+        return m_out_ciphertext;
+    }
+
+    void generate_r1cs_constraints()
+    {
+        for (auto &gadget : m_blocks)
+        {
+            gadget.generate_r1cs_constraints();
+        }
+    }
+
+    void generate_r1cs_witness() const
+    {
+        for (auto &gadget : m_blocks)
+        {
+            gadget.generate_r1cs_witness();
+        }
+    }
+};
 
 const FieldT mimc( const std::vector<FieldT>& round_constants, const FieldT& x, const FieldT& k )
 {
