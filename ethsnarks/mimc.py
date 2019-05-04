@@ -10,11 +10,25 @@ except ImportError:
     keccak_256 = lambda *args: keccak.new(*args, digest_bits=256)
 
 
-SNARK_SCALAR_FIELD = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001
+# DEFAULT_MODULUS = 115792089237316195423570985008687907853269984665640564039457584006405596119041
+# DEFAULT_EXPONENT = 3
+# DEFAULT_FERMAT_EXP = (2*DEFAULT_MODULUS-1)//3
+# DEFAULT_ROUNDS = 8192
+# DEFAULT_SEED = b'mimc'
+
+# this is the modulus for both bn128 and alt_bn128 curves
+DEFAULT_MODULUS = 21888242871839275222246405745257275088548364400416034343698204186575808495617
 DEFAULT_EXPONENT = 7
+DEFAULT_FERMAT_EXP = (4*DEFAULT_MODULUS-3)//7
 DEFAULT_ROUNDS = 91
 DEFAULT_SEED = b'mimc'
 
+
+def find_fermat_exp(e, p):
+    for k in range(0, e):
+        if (k * (p - 1) + 1) % e == 0:
+            return (k * (p - 1) + 1)//e
+    raise Exception('cannot find fermat exponent for e = {}'.format(e))
 
 def to_bytes(*args):
     for i, _ in enumerate(args):
@@ -35,26 +49,32 @@ def H(*args):
     hashed = keccak_256(data).digest()
     return int.from_bytes(hashed, 'big')
 
-assert H(123) == 38632140595220392354280998614525578145353818029287874088356304829962854601866
+# assert H(123) == 38632140595220392354280998614525578145353818029287874088356304829962854601866
 
+mimc_constants_cache = {}
 
 """
 Generate a sequence of round constants
 
 These can hard-coded into circuits or generated on-demand
 """
-def mimc_constants(seed=DEFAULT_SEED, p=SNARK_SCALAR_FIELD, R=DEFAULT_ROUNDS):
-    if isinstance(seed, str):
-        seed = seed.encode('ascii')
-    if isinstance(seed, bytes):
-        # pre-hash byte strings before use
-        seed = H(seed)
-    else:
-        seed = int(seed)
+def mimc_constants(seed=DEFAULT_SEED, p=DEFAULT_MODULUS, R=DEFAULT_ROUNDS):
+    key = seed
+    if key not in mimc_constants_cache:
+        mimc_constants_cache[key] = []
+        if isinstance(seed, str):
+            seed = seed.encode('ascii')
+        if isinstance(seed, bytes):
+            # pre-hash byte strings before use
+            seed = H(seed)
+        else:
+            seed = int(seed)
 
-    for _ in range(R):
-        seed = H(seed)
-        yield seed
+        for _ in range(R):
+            seed = H(seed)
+            mimc_constants_cache[key].append(seed)
+    for c in mimc_constants_cache[key]:
+        yield c
 
 
 """
@@ -87,14 +107,21 @@ The MiMC cipher: https://eprint.iacr.org/2016/492
             |
           result
 """
-def mimc(x, k, seed=DEFAULT_SEED, p=SNARK_SCALAR_FIELD, e=DEFAULT_EXPONENT, R=DEFAULT_ROUNDS):
+def mimc(x, k, seed=DEFAULT_SEED, p=DEFAULT_MODULUS, e=DEFAULT_EXPONENT, R=DEFAULT_ROUNDS):
     assert R > 2
     # TODO: assert gcd(p-1, e) == 1
     for c_i in list(mimc_constants(seed, p, R)):
         a = (x + k + c_i) % p
-        x = (a ** e) % p
+        x = pow(a, e, p)
     return (x + k) % p
 
+def mimc_inverse(x, k, seed=DEFAULT_SEED, p=DEFAULT_MODULUS, e=DEFAULT_FERMAT_EXP, R=DEFAULT_ROUNDS):
+    assert R > 2
+    # TODO: assert gcd(p-1, e) == 1
+    for c_i in list(mimc_constants(seed, p, R))[::-1]:
+        a = pow((x - k) % p, e, p)
+        x = (a - c_i) % p
+    return (x - k) % p
 
 """
 The Miyaguchi–Preneel single-block-length one-way compression
@@ -123,16 +150,16 @@ H_{i-1}--,-->[E]   |
 @param x list of inputs
 @param k initial key
 """
-def mimc_hash(x, k=0, seed=DEFAULT_SEED, p=SNARK_SCALAR_FIELD, e=DEFAULT_EXPONENT, R=DEFAULT_ROUNDS):
+def mimc_hash(x, k=0, seed=DEFAULT_SEED, p=DEFAULT_MODULUS, e=DEFAULT_EXPONENT, R=DEFAULT_ROUNDS):
     for x_i in x:
         r = mimc(x_i, k, seed, p, e, R)
         k = (k + x_i + r) % p
     return k
 
-
 def _main():
     import argparse
     parser = argparse.ArgumentParser("MiMC")
+    parser.add_argument('-p', '--modulus', metavar='N', type=int, default=DEFAULT_MODULUS, help='SNARK scalar fialed modulus')
     parser.add_argument('-r', '--rounds', metavar='N', type=int, default=DEFAULT_ROUNDS, help='number of rounds')
     parser.add_argument('-e', '--exponent', metavar='N', type=int, default=DEFAULT_EXPONENT, help='exponent for round function')
     parser.add_argument('-s', '--seed', type=bytes, default=DEFAULT_SEED, help='seed for round constants')
@@ -142,7 +169,9 @@ def _main():
     parser.add_argument('subargs', nargs='*')
     args = parser.parse_args()
 
+    modulus = args.modulus
     exponent = args.exponent
+    fermat_exp = find_fermat_exp(exponent, modulus)
     rounds = args.rounds
     seed = args.seed
     key = int(args.key)
@@ -171,8 +200,8 @@ def _main():
         return 0
 
     elif cmd == "constants":
-        for x in mimc_constants(seed, SNARK_SCALAR_FIELD, rounds):
-            print(x % SNARK_SCALAR_FIELD)  # hex(x), x)
+        for x in mimc_constants(seed, modulus, rounds):
+            print(x % modulus)  # hex(x), x)
 
     elif cmd == "encrypt":
         for x in args.subargs:
@@ -182,7 +211,7 @@ def _main():
             print(result)
 
     elif cmd == "hash":
-        result = mimc_hash([int(x) for x in args.subargs], key, seed, SNARK_SCALAR_FIELD, exponent, rounds)
+        result = mimc_hash([int(x) for x in args.subargs], key, seed, modulus, exponent, rounds)
         print(result)
 
     else:
