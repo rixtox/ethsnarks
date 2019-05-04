@@ -9,6 +9,7 @@
 #include "gadgets/onewayfunction.hpp"
 #include "sha3.h"
 #include <mutex>
+#include <deque>
 
 
 namespace ethsnarks {
@@ -422,6 +423,101 @@ const FieldT mimc_hash( const std::vector<FieldT>& m )
     return mimc_hash(m, FieldT::zero());
 }
 
+class MiMC_merkle_root_gadget : public GadgetT
+{
+public:
+    typedef MiMC_hash_gadget HashT;
+
+    std::vector<VariableT> m_IVs;
+
+    std::vector<HashT> m_hashes;
+
+    MiMC_merkle_root_gadget(
+        ProtoboardT &pb,
+        const VariableArrayT &in_plaintext,
+        const std::string &annotation_prefix)
+        : GadgetT(pb, annotation_prefix)
+    {
+        assert(in_plaintext.size() > 0);
+
+        if (in_plaintext.size() == 1)
+        {
+            m_hashes.emplace_back(
+                this->pb,
+                next_IV(),
+                std::vector<VariableT>(in_plaintext.begin(), in_plaintext.end()),
+                FMT(annotation_prefix, ".hash"));
+        }
+        else
+        {
+            std::deque<VariableT> curr_level(in_plaintext.begin(), in_plaintext.end());
+
+            while (curr_level.size() > 1)
+            {
+                VariableT &IV = next_IV();
+                std::deque<VariableT> next_level;
+                for (size_t i = 0; i < curr_level.size(); i += 2)
+                {
+                    if (i + 1 < curr_level.size())
+                    {
+                        // has a pair
+                        HashT hash(
+                            this->pb, IV,
+                            std::vector<VariableT>(curr_level.begin() + i, curr_level.begin() + i + 2),
+                            FMT(annotation_prefix, ".hash"));
+                        m_hashes.emplace_back(hash);
+                        next_level.emplace_back(hash.result());
+                    }
+                    else
+                    {
+                        // left-over
+                        next_level.emplace_back(curr_level[i]);
+                    }
+                }
+                curr_level = next_level;
+            }
+        }
+    }
+
+    const VariableT &result() const
+    {
+        return m_hashes.back().result();
+    }
+
+    void generate_r1cs_constraints()
+    {
+        for (auto &gadget : m_hashes)
+        {
+            gadget.generate_r1cs_constraints();
+        }
+    }
+
+    void generate_r1cs_witness(const FieldT IV = FieldT::zero()) const
+    {
+        this->pb.val(m_IVs.front()) = IV;
+        for (auto &gadget : m_hashes)
+        {
+            gadget.generate_r1cs_witness();
+        }
+    }
+
+private:
+    VariableT &next_IV()
+    {
+        if (m_IVs.size() > 0)
+        {
+            std::vector<VariableT> prev_IV(m_IVs.end() - 1, m_IVs.end());
+            HashT hash_IV(this->pb, m_IVs.back(), prev_IV, FMT(annotation_prefix, ".next_IV"));
+            m_hashes.emplace_back(hash_IV);
+            m_IVs.emplace_back(hash_IV.result());
+        }
+        else
+        {
+            m_IVs.emplace_back(make_variable(this->pb, FMT(annotation_prefix, ".IV")));
+        }
+        return m_IVs.back();
+    }
+};
 
 // namespace ethsnarks
 }
