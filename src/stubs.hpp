@@ -12,6 +12,8 @@ int stub_main_verify( const char *prog_name, int argc, const char **argv );
 
 bool stub_test_proof_verify( const ProtoboardT &in_pb );
 
+ProvingKeyT stub_load_pk_from_file(const char *pk_file);
+
 int stub_genkeys_from_pb( ProtoboardT& pb, const char *pk_file, const char *vk_file );
 
 std::string stub_prove_from_pb( ProtoboardT& pb, const char *pk_file );

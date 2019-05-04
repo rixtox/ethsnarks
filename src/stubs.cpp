@@ -32,6 +32,10 @@ bool stub_verify( const char *vk_json, const char *proof_json )
     return false;
 }
 
+ProvingKeyT stub_load_pk_from_file(const char *pk_file)
+{
+    return loadFromFile<ProvingKeyT>(pk_file);
+}
 
 std::string stub_prove_from_pb( ProtoboardT& pb, const char *pk_file )
 {
