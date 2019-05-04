@@ -1,6 +1,9 @@
 # Copyright (c) 2018 HarryR
 # License: LGPL-3.0+
 
+from functools import partial
+from multiprocessing import Pool, cpu_count
+
 try:
     # pysha3
     from sha3 import keccak_256
@@ -123,6 +126,61 @@ def mimc_inverse(x, k, seed=DEFAULT_SEED, p=DEFAULT_MODULUS, e=DEFAULT_FERMAT_EX
         x = (a - c_i) % p
     return (x - k) % p
 
+def mimc_partial(k, seed, p, e, R, x):
+    return mimc(x, k, seed, p, e, R)
+
+def mimc_encrypt(data, k, seed=DEFAULT_SEED, p=DEFAULT_MODULUS, e=DEFAULT_EXPONENT, R=DEFAULT_ROUNDS):
+    with Pool(cpu_count()) as pool:
+        return pool.map(partial(mimc_partial, k, seed, p, e, R), data)
+
+def mimc_encrypt_file(k, inpath, outpath, seed=DEFAULT_SEED, p=DEFAULT_MODULUS, e=DEFAULT_EXPONENT, R=DEFAULT_ROUNDS):
+    with open(inpath, 'rb') as f:
+        data = []
+        size = 0
+        while True:
+            block = f.read(31) # 256 bits
+            if len(block) == 0:
+                break
+            size += len(block)
+            data.append(int.from_bytes(block, 'big'))
+        data.append(size)
+        print([x.to_bytes(32, 'big').hex() for x in data])
+        data = mimc_encrypt(data, k, seed, p, e, R)
+        print([x.to_bytes(32, 'big').hex() for x in data])
+        with open(outpath, 'wb') as f:
+            for x in data:
+                f.write(x.to_bytes(32, 'big'))
+            return
+        raise Exception('failed to write file {}'.format(outpath))
+    raise Exception('failed to read file {}'.format(inpath))
+
+def mimc_inverse_partial(k, seed, p, e, R, x):
+    return mimc_inverse(x, k, seed, p, e, R)
+
+def mimc_decrypt(data, k, seed=DEFAULT_SEED, p=DEFAULT_MODULUS, e=DEFAULT_FERMAT_EXP, R=DEFAULT_ROUNDS):
+    with Pool(cpu_count()) as pool:
+        return pool.map(partial(mimc_inverse_partial, k, seed, p, e, R), data)
+
+def mimc_decrypt_file(k, inpath, outpath, seed=DEFAULT_SEED, p=DEFAULT_MODULUS, e=DEFAULT_FERMAT_EXP, R=DEFAULT_ROUNDS):
+    with open(inpath, 'rb') as f:
+        data = []
+        while True:
+            block = f.read(32) # 256 bits
+            if len(block) == 0:
+                break
+            data.append(int.from_bytes(block, 'big'))
+        data = mimc_decrypt(data, k, seed, p, e, R)
+        size = data.pop()
+        assert (size + 30)//31 == len(data)
+        with open(outpath, 'wb') as f:
+            for x in data:
+                f.write(x.to_bytes(min(31, size), 'big'))
+                size -= 31
+            return
+        raise Exception('failed to write file {}'.format(outpath))
+    raise Exception('failed to read file {}'.format(inpath))
+
+
 """
 The Miyaguchi–Preneel single-block-length one-way compression
 function is an extended variant of Matyas–Meyer–Oseas. It was
@@ -204,11 +262,20 @@ def _main():
             print(x % modulus)  # hex(x), x)
 
     elif cmd == "encrypt":
-        for x in args.subargs:
-            x = int(x)
-            result = mimc(x, key, seed, SNARK_SCALAR_FIELD, exponent, rounds)
-            key = mimc(key, key, seed, SNARK_SCALAR_FIELD, exponent, rounds)
-            print(result)
+        data = [int(x) for x in args.subargs]
+        result = mimc_encrypt(data, key, seed, modulus, exponent, rounds)
+        print(result)
+    
+    elif cmd == "encrypt_file":
+        mimc_encrypt_file(key, args.subargs[0], args.subargs[1])
+    
+    elif cmd == "decrypt_file":
+        mimc_decrypt_file(key, args.subargs[0], args.subargs[1])
+
+    elif cmd == "decrypt":
+        data = [int(x) for x in args.subargs]
+        result = mimc_decrypt(data, key, seed, modulus, fermat_exp, rounds)
+        print(result)
 
     elif cmd == "hash":
         result = mimc_hash([int(x) for x in args.subargs], key, seed, modulus, exponent, rounds)
